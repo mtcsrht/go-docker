@@ -11,7 +11,7 @@ import (
 type ImageService interface {
 	Ensure(ctx context.Context, name string) (string, error)
 	Pull(ctx context.Context, name string) (string, error)
-	GetConfig(ctx context.Context, name string) (v1.DockerOCIImageConfig, error)
+	GetConfig(ctx context.Context, name string) (*v1.DockerOCIImageConfig, error)
 }
 
 type ImageServiceImpl struct {
@@ -50,7 +50,10 @@ func (i ImageServiceImpl) Pull(ctx context.Context, name string) (string, error)
 	}
 	return image.ID, nil
 }
-func (i ImageServiceImpl) GetConfig(ctx context.Context, name string) (v1.DockerOCIImageConfig, error) {
-	//TODO implement me
-	panic("implement me")
+func (i ImageServiceImpl) GetConfig(ctx context.Context, name string) (*v1.DockerOCIImageConfig, error) {
+	img, err := i.Client.ImageInspect(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	return img.Config, err
 }

@@ -38,7 +38,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	imageName := "postgres:16"
+	imageName := "mongo:latest"
 	imageID, err := imageService.Ensure(ctx, imageName)
 	if err != nil {
 		log.Fatal(err)
@@ -66,7 +66,13 @@ func main() {
 	}
 
 	containerName := "container-" + uuid.New().String()
-	mountPath := "/var/lib/postgresql/data"                                                                           // fetch mountPath from image GetConfig method's return type
+	imageConf, err := imageService.GetConfig(ctx, imageName)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	mountPath := imageConf.Volumes
+
 	containerID, err := containerService.Create(ctx, containerName, imageName, vol.Name, mountPath, envVars, portMap) // Could add service name like, container-mc-uuid or something
 	if err != nil {
 		log.Fatal(err)

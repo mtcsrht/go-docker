@@ -11,7 +11,7 @@ import (
 )
 
 type ContainerService interface {
-	Create(ctx context.Context, name string, image string, volumeName string, mountPath string, env []string, portBindings network.PortMap) (string, error)
+	Create(ctx context.Context, name string, image string, volumeName string, mountPaths map[string]struct{}, env []string, portBindings network.PortMap) (string, error)
 	Get(ctx context.Context, name string) (*client.ContainerListResult, error)
 	Start(ctx context.Context, name string) error
 	Stop(ctx context.Context, name string) error
@@ -33,7 +33,7 @@ func NewContainerService(client *client.Client, vs VolumeService, is ImageServic
 	}
 }
 
-func (c ContainerServiceImpl) Create(ctx context.Context, name string, image string, volumeName string, mountPath string, env []string, portBindings network.PortMap) (string, error) {
+func (c ContainerServiceImpl) Create(ctx context.Context, name string, image string, volumeName string, mountPaths map[string]struct{}, env []string, portBindings network.PortMap) (string, error) {
 	response, err := c.VolumeService.List(ctx, volumeName)
 	if err != nil {
 		return "", err
@@ -42,19 +42,22 @@ func (c ContainerServiceImpl) Create(ctx context.Context, name string, image str
 		return "", errors.New("volume not found")
 	}
 
+	mounts := make([]mount.Mount, 0, len(mountPaths))
+	for mountPath := range mountPaths {
+		mounts = append(mounts, mount.Mount{
+			Type:   mount.TypeVolume,
+			Source: volumeName,
+			Target: mountPath,
+		})
+	}
+
 	createResult, err := c.Client.ContainerCreate(ctx, client.ContainerCreateOptions{
 		Config: &container.Config{
 			Env: env,
 		},
 		HostConfig: &container.HostConfig{
 			PortBindings: portBindings,
-			Mounts: []mount.Mount{
-				{
-					Type:   mount.TypeVolume,
-					Source: volumeName,
-					Target: mountPath,
-				},
-			},
+			Mounts:       mounts,
 		},
 		Name:  name,
 		Image: image,
