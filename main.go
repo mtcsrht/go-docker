@@ -2,17 +2,43 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"go-docker/docker"
 	"log"
 	"net/netip"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	"github.com/moby/moby/api/types/network"
 )
 
+type envFlag []string
+
+func (e *envFlag) String() string {
+	return strings.Join(*e, ",")
+}
+
+func (e *envFlag) Set(value string) error {
+	if !strings.Contains(value, "=") {
+		return fmt.Errorf("env must be KEY=VALUE, got %q", value)
+	}
+	*e = append(*e, value)
+	return nil
+}
+
 func main() {
+
+	imageArg := flag.String("image", "", "image to use")
+	var envVars envFlag
+	flag.Var(&envVars, "e", "environment variable KEY=VALUE (repeatable)")
+	flag.Parse()
+
+	if *imageArg == "" {
+		log.Fatal("-image is required")
+	}
+
 	ctx := context.Background()
 
 	err := godotenv.Load()
@@ -38,17 +64,13 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	imageName := "postgres:17"
+
+	imageName := *imageArg
 	imageID, err := imageService.Ensure(ctx, imageName)
 	if err != nil {
 		log.Fatal(err)
 	}
 	fmt.Printf("image %s ready\n", imageID)
-
-	var envVars []string
-	envVars = append(envVars, "POSTGRES_USER=mc")
-	envVars = append(envVars, "POSTGRES_PASSWORD=mcFasz")
-	envVars = append(envVars, "POSTGRES_DB=minecraft")
 
 	containerName := "container-" + uuid.New().String()
 	imageConf, err := imageService.GetConfig(ctx, imageName)
