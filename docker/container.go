@@ -33,6 +33,18 @@ func NewContainerService(client *client.Client, vs VolumeService, is ImageServic
 	}
 }
 
+func CreateMountPaths(mountPaths map[string]struct{}, volumeName string) []mount.Mount {
+	mounts := make([]mount.Mount, 0, len(mountPaths))
+	for mountPath := range mountPaths {
+		mounts = append(mounts, mount.Mount{
+			Type:   mount.TypeVolume,
+			Source: volumeName,
+			Target: mountPath,
+		})
+	}
+	return mounts
+}
+
 func (c ContainerServiceImpl) Create(ctx context.Context, name string, image string, volumeName string, mountPaths map[string]struct{}, env []string, portBindings network.PortMap) (string, error) {
 	response, err := c.VolumeService.List(ctx, volumeName)
 	if err != nil {
@@ -42,14 +54,7 @@ func (c ContainerServiceImpl) Create(ctx context.Context, name string, image str
 		return "", errors.New("volume not found")
 	}
 
-	mounts := make([]mount.Mount, 0, len(mountPaths))
-	for mountPath := range mountPaths {
-		mounts = append(mounts, mount.Mount{
-			Type:   mount.TypeVolume,
-			Source: volumeName,
-			Target: mountPath,
-		})
-	}
+	mounts := CreateMountPaths(mountPaths, volumeName)
 
 	createResult, err := c.Client.ContainerCreate(ctx, client.ContainerCreateOptions{
 		Config: &container.Config{

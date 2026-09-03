@@ -38,7 +38,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	imageName := "mongo:latest"
+	imageName := "postgres:17"
 	imageID, err := imageService.Ensure(ctx, imageName)
 	if err != nil {
 		log.Fatal(err)
@@ -50,21 +50,6 @@ func main() {
 	envVars = append(envVars, "POSTGRES_PASSWORD=mcFasz")
 	envVars = append(envVars, "POSTGRES_DB=minecraft")
 
-	containerPort, err := network.ParsePort("5432/tcp")
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	porBindings := make([]network.PortBinding, 0)
-	porBindings = append(porBindings, network.PortBinding{
-		HostIP:   netip.MustParseAddr("127.0.0.1"),
-		HostPort: "5432",
-	})
-
-	portMap := network.PortMap{
-		containerPort: porBindings,
-	}
-
 	containerName := "container-" + uuid.New().String()
 	imageConf, err := imageService.GetConfig(ctx, imageName)
 	if err != nil {
@@ -72,6 +57,19 @@ func main() {
 	}
 
 	mountPath := imageConf.Volumes
+
+	portMap := network.PortMap{}
+	for exposedPort := range imageConf.ExposedPorts {
+		parsedPort, err := network.ParsePort(exposedPort)
+		if err != nil {
+			log.Fatal(err)
+		}
+		portMap[parsedPort] = []network.PortBinding{{
+			HostIP:   netip.MustParseAddr("127.0.0.1"),
+			HostPort: parsedPort.Port(),
+		},
+		}
+	}
 
 	containerID, err := containerService.Create(ctx, containerName, imageName, vol.Name, mountPath, envVars, portMap) // Could add service name like, container-mc-uuid or something
 	if err != nil {
@@ -89,4 +87,7 @@ func main() {
 	}
 
 	err = containerService.Start(ctx, containerID)
+	if err != nil {
+		log.Fatal(err)
+	}
 }
