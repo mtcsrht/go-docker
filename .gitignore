@@ -1,0 +1,30 @@
+# Binaries
+go-docker
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test / coverage
+*.test
+*.out
+coverage.*
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Go workspace
+go.work
+go.work.sum
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
