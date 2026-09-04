@@ -10,9 +10,28 @@ import (
 	"github.com/moby/moby/client"
 )
 
+// ContainerSpec describes the container to create. Name, Image and VolumeName
+// are required; the remaining fields may be left at their zero value.
+type ContainerSpec struct {
+	// Name is the container name.
+	Name string
+	// Image is the image reference the container runs.
+	Image string
+	// VolumeName is the volume mounted at every path in MountPaths. It must
+	// already exist.
+	VolumeName string
+	// MountPaths holds the in-container paths to back with VolumeName, in the
+	// shape the image config reports its volumes.
+	MountPaths map[string]struct{}
+	// Env holds environment variables as KEY=VALUE.
+	Env []string
+	// PortBindings maps container ports to host bindings.
+	PortBindings network.PortMap
+}
+
 // ContainerService manages the lifecycle of containers.
 type ContainerService interface {
-	Create(ctx context.Context, name string, image string, volumeName string, mountPaths map[string]struct{}, env []string, portBindings network.PortMap) (string, error)
+	Create(ctx context.Context, spec ContainerSpec) (string, error)
 	Get(ctx context.Context, name string) (*client.ContainerListResult, error)
 	Start(ctx context.Context, name string) error
 	Stop(ctx context.Context, name string) error
@@ -51,11 +70,10 @@ func CreateMountPaths(mountPaths map[string]struct{}, volumeName string) []mount
 	return mounts
 }
 
-// Create creates a container named name from image, mounting volumeName at every
-// path in mountPaths and applying env and portBindings. It returns the new
-// container ID. The volume must already exist; Create does not create one.
-func (c ContainerServiceImpl) Create(ctx context.Context, name string, image string, volumeName string, mountPaths map[string]struct{}, env []string, portBindings network.PortMap) (string, error) {
-	response, err := c.VolumeService.List(ctx, volumeName)
+// Create creates the container described by spec and returns its ID. The volume
+// spec.VolumeName must already exist; Create does not create one.
+func (c ContainerServiceImpl) Create(ctx context.Context, spec ContainerSpec) (string, error) {
+	response, err := c.VolumeService.List(ctx, spec.VolumeName)
 	if err != nil {
 		return "", err
 	}
@@ -63,18 +81,18 @@ func (c ContainerServiceImpl) Create(ctx context.Context, name string, image str
 		return "", errors.New("volume not found")
 	}
 
-	mounts := CreateMountPaths(mountPaths, volumeName)
+	mounts := CreateMountPaths(spec.MountPaths, spec.VolumeName)
 
 	createResult, err := c.Client.ContainerCreate(ctx, client.ContainerCreateOptions{
 		Config: &container.Config{
-			Env: env,
+			Env: spec.Env,
 		},
 		HostConfig: &container.HostConfig{
-			PortBindings: portBindings,
+			PortBindings: spec.PortBindings,
 			Mounts:       mounts,
 		},
-		Name:  name,
-		Image: image,
+		Name:  spec.Name,
+		Image: spec.Image,
 	})
 	if err != nil {
 		return "", err

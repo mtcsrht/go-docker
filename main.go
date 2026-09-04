@@ -98,7 +98,15 @@ func main() {
 		}
 	}
 
-	containerID, err := containerService.Create(ctx, containerName, imageName, vol.Name, mountPath, envVars, portMap) // Could add service name like, container-mc-uuid or something
+	// Could add service name like, container-mc-uuid or something
+	containerID, err := containerService.Create(ctx, docker.ContainerSpec{
+		Name:         containerName,
+		Image:        imageName,
+		VolumeName:   vol.Name,
+		MountPaths:   mountPath,
+		Env:          envVars,
+		PortBindings: portMap,
+	})
 	if err != nil {
 		log.Fatal(err)
 	}
