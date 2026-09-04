@@ -1,4 +1,4 @@
-module go-docker
+module github.com/mtcsrht/go-docker
 
 go 1.26.2
 
