@@ -2,6 +2,7 @@ package docker
 
 import (
 	"context"
+	"log/slog"
 
 	cerrdefs "github.com/containerd/errdefs"
 	v1 "github.com/moby/docker-image-spec/specs-go/v1"
@@ -38,7 +39,10 @@ func (i ImageServiceImpl) Ensure(ctx context.Context, name string) (string, erro
 }
 
 // Pull pulls the image the returns the ID of the image if successful, otherwise it returns an error.
+// The start and the completion of the download are logged.
 func (i ImageServiceImpl) Pull(ctx context.Context, name string) (string, error) {
+	slog.Info("pulling image", "image", name)
+
 	resp, err := i.Client.ImagePull(ctx, name, client.ImagePullOptions{})
 	if err != nil {
 		return "", err
@@ -46,6 +50,7 @@ func (i ImageServiceImpl) Pull(ctx context.Context, name string) (string, error)
 	if err := resp.Wait(ctx); err != nil {
 		return "", err
 	}
+	slog.Info("pulled image", "image", name)
 
 	image, err := i.Client.ImageInspect(ctx, name)
 	if err != nil {
