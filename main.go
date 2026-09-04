@@ -14,12 +14,17 @@ import (
 	"github.com/moby/moby/api/types/network"
 )
 
+// envFlag collects repeated -e KEY=VALUE flags into a slice.
 type envFlag []string
 
+// String renders the collected variables as a comma-separated list.
+// It is part of the flag.Value interface.
 func (e *envFlag) String() string {
 	return strings.Join(*e, ",")
 }
 
+// Set validates that value has the form KEY=VALUE and appends it.
+// It is part of the flag.Value interface.
 func (e *envFlag) Set(value string) error {
 	if !strings.Contains(value, "=") {
 		return fmt.Errorf("env must be KEY=VALUE, got %q", value)

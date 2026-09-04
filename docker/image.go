@@ -8,16 +8,19 @@ import (
 	"github.com/moby/moby/client"
 )
 
+// ImageService resolves, pulls and inspects images.
 type ImageService interface {
 	Ensure(ctx context.Context, name string) (string, error)
 	Pull(ctx context.Context, name string) (string, error)
 	GetConfig(ctx context.Context, name string) (*v1.DockerOCIImageConfig, error)
 }
 
+// ImageServiceImpl implements ImageService on top of the Docker API client.
 type ImageServiceImpl struct {
 	*client.Client
 }
 
+// NewImageService returns an ImageService backed by client.
 func NewImageService(client *client.Client) ImageService {
 	return &ImageServiceImpl{client}
 }
@@ -50,6 +53,9 @@ func (i ImageServiceImpl) Pull(ctx context.Context, name string) (string, error)
 	}
 	return image.ID, nil
 }
+
+// GetConfig returns the image's embedded OCI config, which records what the image
+// declares at build time: entrypoint, command, exposed ports, env and volumes.
 func (i ImageServiceImpl) GetConfig(ctx context.Context, name string) (*v1.DockerOCIImageConfig, error) {
 	img, err := i.Client.ImageInspect(ctx, name)
 	if err != nil {
