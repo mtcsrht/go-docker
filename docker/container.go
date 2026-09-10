@@ -121,14 +121,14 @@ func (c ContainerServiceImpl) Start(ctx context.Context, name string) error {
 	return err
 }
 
-// Stop is not implemented yet and panics when called.
+// Stop stops the container identified by name or ID.
 func (c ContainerServiceImpl) Stop(ctx context.Context, name string) error {
-	//TODO implement me
-	panic("implement me")
+	_, err := c.Client.ContainerStop(ctx, name, client.ContainerStopOptions{})
+	return err
 }
 
-// Remove is not implemented yet and panics when called.
+// Remove removes the container identified by name or ID.
 func (c ContainerServiceImpl) Remove(ctx context.Context, name string) error {
-	//TODO implement me
-	panic("implement me")
+	_, err := c.Client.ContainerRemove(ctx, name, client.ContainerRemoveOptions{})
+	return err
 }
