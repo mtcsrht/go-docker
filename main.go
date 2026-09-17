@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"flag"
 	"fmt"
@@ -162,4 +163,22 @@ func main() {
 		fatal("starting container", "id", containerID, "error", err)
 	}
 	slog.Info("container started", "id", containerID)
+
+	fmt.Println("Press Enter to stop")
+	input := bufio.NewScanner(os.Stdin)
+	input.Scan()
+	err = containerService.Stop(ctx, containerID)
+	if err != nil {
+		fatal("stopping container", "id", containerID, "error", err)
+	}
+	slog.Info("container stopped", "id", containerID)
+
+	fmt.Println("Press Enter to remove")
+	input = bufio.NewScanner(os.Stdin)
+	input.Scan()
+	err = containerService.Remove(ctx, containerID)
+	if err != nil {
+		fatal("removing container", "id", containerID, "error", err)
+	}
+	slog.Info("container removed", "id", containerID)
 }
