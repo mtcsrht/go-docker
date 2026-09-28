@@ -2,13 +2,21 @@ package docker
 
 import (
 	"context"
-	"errors"
+	"fmt"
 
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/mount"
 	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/client"
 )
+
+type MemorySettings struct {
+	// MaxMemory sets the maximum usable memory in MBs for a container
+	MaxMemory int64
+	// MaxSwap sets the swap in MBs available on top of MaxMemory. Ignored
+	// unless MaxMemory is set.
+	MaxSwap int64
+}
 
 // ContainerSpec describes the container to create. Name, Image and VolumeName
 // are required; the remaining fields may be left at their zero value.
@@ -27,6 +35,15 @@ type ContainerSpec struct {
 	Env []string
 	// PortBindings maps container ports to host bindings.
 	PortBindings network.PortMap
+
+	// MemorySettings holds the memory settings of a container
+	MemorySettings MemorySettings
+
+	// MilliCPUs set the amount of cores (1500 = 1.5 cores)
+	MilliCPUs int64
+
+	// DiskGB sets the amount of GB of storage container has
+	DiskGB int64
 }
 
 // ContainerService manages the lifecycle of containers.
@@ -78,24 +95,40 @@ func (c ContainerServiceImpl) Create(ctx context.Context, spec ContainerSpec) (s
 		return "", err
 	}
 	if response == nil {
-		return "", errors.New("volume not found")
+		return "", fmt.Errorf("volume %q not found", spec.VolumeName)
 	}
 
 	mounts := CreateMountPaths(spec.MountPaths, spec.VolumeName)
+
+	resources := container.Resources{NanoCPUs: spec.MilliCPUs * 1e6}
+	if m := spec.MemorySettings; m.MaxMemory > 0 {
+		resources.Memory = m.MaxMemory << 20
+		// Docker's MemorySwap is memory+swap combined, not swap alone
+		resources.MemorySwap = (m.MaxMemory + m.MaxSwap) << 20
+	}
+
+	// size needs overlay2 on xfs with pquota, so only send it when asked for
+	var storageOpt map[string]string
+	if spec.DiskGB > 0 {
+		storageOpt = map[string]string{"size": fmt.Sprintf("%dG", spec.DiskGB)}
+	}
 
 	createResult, err := c.Client.ContainerCreate(ctx, client.ContainerCreateOptions{
 		Config: &container.Config{
 			Env: spec.Env,
 		},
 		HostConfig: &container.HostConfig{
-			PortBindings: spec.PortBindings,
-			Mounts:       mounts,
+			PortBindings:  spec.PortBindings,
+			Mounts:        mounts,
+			Resources:     resources,
+			StorageOpt:    storageOpt,
+			RestartPolicy: container.RestartPolicy{Name: container.RestartPolicyUnlessStopped},
 		},
 		Name:  spec.Name,
 		Image: spec.Image,
 	})
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("create container %q: %w", spec.Name, err)
 	}
 	return createResult.ID, nil
 }

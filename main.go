@@ -136,14 +136,20 @@ func main() {
 		}
 	}
 
+	memory := docker.MemorySettings{
+		MaxMemory: 512,
+		MaxSwap:   512,
+	}
 	// Could add service name like, container-mc-uuid or something
 	containerID, err := containerService.Create(ctx, docker.ContainerSpec{
-		Name:         containerName,
-		Image:        imageName,
-		VolumeName:   vol.Name,
-		MountPaths:   mountPath,
-		Env:          envVars,
-		PortBindings: portMap,
+		Name:           containerName,
+		Image:          imageName,
+		VolumeName:     vol.Name,
+		MountPaths:     mountPath,
+		Env:            envVars,
+		PortBindings:   portMap,
+		MemorySettings: memory,
+		MilliCPUs:      1500,
 	})
 	if err != nil {
 		fatal("creating container", "name", containerName, "error", err)
