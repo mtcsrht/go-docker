@@ -1,39 +1,22 @@
 package main
 
 import (
-	"bufio"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
-	"net/netip"
+	"net"
+	"net/http"
 	"os"
-	"strings"
+	"os/signal"
+	"syscall"
+	"time"
 
-	"github.com/google/uuid"
 	"github.com/joho/godotenv"
-	"github.com/moby/moby/api/types/network"
+	"github.com/mtcsrht/go-docker/api"
 	"github.com/mtcsrht/go-docker/docker"
 )
-
-// envFlag collects repeated -e KEY=VALUE flags into a slice.
-type envFlag []string
-
-// String renders the collected variables as a comma-separated list.
-// It is part of the flag.Value interface.
-func (e *envFlag) String() string {
-	return strings.Join(*e, ",")
-}
-
-// Set validates that value has the form KEY=VALUE and appends it.
-// It is part of the flag.Value interface.
-func (e *envFlag) Set(value string) error {
-	if !strings.Contains(value, "=") {
-		return fmt.Errorf("env must be KEY=VALUE, got %q", value)
-	}
-	*e = append(*e, value)
-	return nil
-}
 
 // fatal logs msg with the given attributes and exits with a failure status.
 // Like log.Fatal, it does not run deferred functions.
@@ -66,23 +49,14 @@ func setupLogger(format string, level string) error {
 }
 
 func main() {
-
-	imageArg := flag.String("image", "", "image to use")
+	addr := flag.String("addr", "127.0.0.1:8080", "HTTP listen address")
 	logFormat := flag.String("log-format", "text", "log output format: text or json")
 	logLevel := flag.String("log-level", "info", "log level: debug, info, warn or error")
-	var envVars envFlag
-	flag.Var(&envVars, "e", "environment variable KEY=VALUE (repeatable)")
 	flag.Parse()
 
 	if err := setupLogger(*logFormat, *logLevel); err != nil {
 		fatal("configuring logger", "error", err)
 	}
-
-	if *imageArg == "" {
-		fatal("-image is required")
-	}
-
-	ctx := context.Background()
 
 	err := godotenv.Load()
 	if err != nil {
@@ -103,101 +77,32 @@ func main() {
 	imageService := docker.NewImageService(dockerClient)
 	containerService := docker.NewContainerService(dockerClient, volumeService, imageService)
 
-	vol, err := volumeService.Create(ctx)
-	if err != nil {
-		fatal("creating volume", "error", err)
+	// cancelled on shutdown, which also ends open log streams
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	srv := &http.Server{
+		Addr:              *addr,
+		Handler:           api.NewHandler(containerService, volumeService, imageService),
+		ReadHeaderTimeout: 10 * time.Second,
+		BaseContext:       func(net.Listener) context.Context { return ctx },
 	}
 
-	imageName := *imageArg
-	imageID, err := imageService.Ensure(ctx, imageName)
-	if err != nil {
-		fatal("ensuring image", "image", imageName, "error", err)
-	}
-	slog.Info("image ready", "image", imageName, "id", imageID)
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- srv.ListenAndServe() }()
+	slog.Info("listening", "addr", *addr)
 
-	containerName := "container-" + uuid.New().String()
-	imageConf, err := imageService.GetConfig(ctx, imageName)
-	if err != nil {
-		fatal("reading image config", "image", imageName, "error", err)
+	select {
+	case err := <-serveErr:
+		fatal("serving http", "error", err)
+	case <-ctx.Done():
 	}
+	stop()
 
-	mountPath := imageConf.Volumes
-
-	portMap := network.PortMap{}
-	for exposedPort := range imageConf.ExposedPorts {
-		parsedPort, err := network.ParsePort(exposedPort)
-		if err != nil {
-			fatal("parsing exposed port", "port", exposedPort, "error", err)
-		}
-		portMap[parsedPort] = []network.PortBinding{{
-			HostIP:   netip.MustParseAddr("127.0.0.1"),
-			HostPort: parsedPort.Port(),
-		},
-		}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		slog.Error("shutting down", "error", err)
 	}
-
-	memory := docker.MemorySettings{
-		MaxMemory: 2048,
-		MaxSwap:   2048,
-	}
-	// Could add service name like, container-mc-uuid or something
-	containerID, err := containerService.Create(ctx, docker.ContainerSpec{
-		Name:           containerName,
-		Image:          imageName,
-		VolumeName:     vol.Name,
-		MountPaths:     mountPath,
-		Env:            envVars,
-		PortBindings:   portMap,
-		MemorySettings: memory,
-		MilliCPUs:      5000,
-		DiskGB:         5,
-	})
-	if err != nil {
-		fatal("creating container", "name", containerName, "error", err)
-	}
-	slog.Info("container created", "id", containerID, "volume", vol.Name)
-
-	containers, err := containerService.Get(ctx, containerName)
-	if err != nil {
-		fatal("listing containers", "name", containerName, "error", err)
-	}
-	for _, container := range containers.Items {
-		slog.Info("container found", "names", container.Names, "volume", vol.Name)
-	}
-
-	err = containerService.Start(ctx, containerID)
-	if err != nil {
-		fatal("starting container", "id", containerID, "error", err)
-	}
-	slog.Info("container started", "id", containerID)
-
-	logCtx, stopLogs := context.WithCancel(ctx)
-	logsDone := make(chan struct{})
-	go func() {
-		defer close(logsDone)
-		err := containerService.StreamLogs(logCtx, containerID, "40", os.Stdout, os.Stderr)
-		if err != nil && logCtx.Err() == nil {
-			slog.Error("streaming logs", "id", containerID, "error", err)
-		}
-	}()
-
-	fmt.Println("Press Enter to stop")
-	input := bufio.NewScanner(os.Stdin)
-	input.Scan()
-	stopLogs()
-	<-logsDone
-	err = containerService.Stop(ctx, containerID)
-	if err != nil {
-		fatal("stopping container", "id", containerID, "error", err)
-	}
-	slog.Info("container stopped", "id", containerID)
-
-	fmt.Println("Press Enter to remove")
-	input = bufio.NewScanner(os.Stdin)
-	input.Scan()
-	err = containerService.Remove(ctx, containerID)
-	if err != nil {
-		fatal("removing container", "id", containerID, "error", err)
-	}
-	slog.Info("container removed", "id", containerID)
+	slog.Info("stopped")
 }

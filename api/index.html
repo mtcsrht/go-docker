@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>go-docker test panel</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f7f9; --panel: #fff; --fg: #1d2127; --muted: #69707a;
+    --border: #d9dde3; --accent: #2f6fdf; --danger: #c93434; --ok: #23874b;
+    --log-bg: #0f1216; --log-fg: #d7dde5; --log-err: #ff7b72;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #111418; --panel: #1a1e24; --fg: #e3e7ec; --muted: #8b939e;
+            --border: #2c323b; --accent: #5b92f0; --danger: #ef6b6b; --ok: #4cc27c; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 14px/1.45 system-ui, sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding: 16px; display: grid; gap: 16px;
+         grid-template-columns: minmax(0, 1fr); }
+  h1 { font-size: 18px; margin: 0; }
+  h2 { font-size: 15px; margin: 0 0 12px; }
+  section { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+  label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
+  input, textarea { font: inherit; color: var(--fg); background: var(--bg);
+                    border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; }
+  textarea { font-family: ui-monospace, monospace; min-height: 60px; resize: vertical; }
+  button { font: inherit; border: 1px solid var(--border); background: var(--bg); color: var(--fg);
+           border-radius: 6px; padding: 5px 10px; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { color: var(--danger); }
+  button:disabled { opacity: .5; cursor: wait; }
+  .grid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+  .row { display: flex; gap: 8px; align-items: end; flex-wrap: wrap; }
+  .full { grid-column: 1 / -1; }
+  .msg { font-family: ui-monospace, monospace; font-size: 12px; white-space: pre-wrap;
+         word-break: break-all; margin: 10px 0 0; }
+  .msg.err { color: var(--danger); } .msg.ok { color: var(--ok); }
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { font-size: 12px; color: var(--muted); font-weight: 600; }
+  td.actions { white-space: nowrap; }
+  td.actions button { margin-right: 4px; }
+  .state-running { color: var(--ok); } .state-exited, .state-dead { color: var(--danger); }
+  .mono { font-family: ui-monospace, monospace; font-size: 12px; }
+  td.mono { word-break: break-all; min-width: 140px; }
+  #log { background: var(--log-bg); color: var(--log-fg); height: 360px; overflow: auto; margin: 10px 0 0;
+         padding: 10px; border-radius: 6px; font: 12px/1.4 ui-monospace, monospace; white-space: pre-wrap; word-break: break-all; }
+  #log .stderr { color: var(--log-err); }
+  #log .sys { color: var(--muted); font-style: italic; }
+</style>
+</head>
+<body>
+<main>
+  <h1>go-docker test panel</h1>
+
+  <section>
+    <h2>Create container</h2>
+    <form id="create" class="grid">
+      <label class="full">Image <input name="image" required placeholder="redis:alpine"></label>
+      <label>Memory MB <input name="memoryMB" type="number" min="0" value="0"></label>
+      <label>Swap MB <input name="swapMB" type="number" min="0" value="0"></label>
+      <label>Milli CPUs <input name="milliCPUs" type="number" min="0" value="0"></label>
+      <label>Disk GB <input name="diskGB" type="number" min="0" value="0"></label>
+      <label class="full">Env (KEY=VALUE, one per line) <textarea name="env" placeholder="EULA=TRUE"></textarea></label>
+      <div class="full row"><button class="primary" type="submit">Create</button>
+        <span style="color:var(--muted);font-size:12px">0 = no limit. Pulling a new image can take a while.</span></div>
+    </form>
+    <p id="create-msg" class="msg"></p>
+  </section>
+
+  <section>
+    <h2>Containers</h2>
+    <form id="filter" class="row">
+      <label>Name contains <input name="name" value="container-"></label>
+      <button type="submit">Refresh</button>
+    </form>
+    <p id="list-msg" class="msg"></p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Name</th><th>Image</th><th>State</th><th>Ports</th><th></th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Logs <span id="log-target" class="mono" style="color:var(--muted)"></span></h2>
+    <div class="row">
+      <label>Tail <input id="tail" value="100" size="6"></label>
+      <label style="flex-direction:row;display:flex;align-items:center;gap:6px">
+        <input id="autoscroll" type="checkbox" checked> autoscroll</label>
+      <button id="disconnect" type="button" disabled>Disconnect</button>
+      <button id="clear" type="button">Clear</button>
+    </div>
+    <pre id="log"></pre>
+  </section>
+</main>
+
+<script>
+const $ = (sel) => document.querySelector(sel);
+
+// api calls the REST API and throws the server's error description on failure.
+async function api(method, path, body) {
+  const res = await fetch(path, {
+    method,
+    headers: body ? { "Content-Type": "application/json" } : {},
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (res.status === 204) return null;
+  const data = await res.json().catch(() => null);
+  if (!res.ok) {
+    throw new Error(data ? `${data.code} ${data.message}: ${data.description}` : `HTTP ${res.status}`);
+  }
+  return data;
+}
+
+function show(el, text, ok) {
+  el.textContent = text;
+  el.className = "msg " + (ok ? "ok" : "err");
+}
+
+// busy disables btn while fn runs.
+async function busy(btn, fn) {
+  btn.disabled = true;
+  try { await fn(); } finally { btn.disabled = false; }
+}
+
+$("#create").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  const body = {
+    image: f.get("image").trim(),
+    env: f.get("env").split("\n").map((s) => s.trim()).filter(Boolean),
+    memoryMB: +f.get("memoryMB"), swapMB: +f.get("swapMB"),
+    milliCPUs: +f.get("milliCPUs"), diskGB: +f.get("diskGB"),
+  };
+  const msg = $("#create-msg");
+  show(msg, "creating…", true);
+  busy(e.submitter, async () => {
+    try {
+      const r = await api("POST", "/containers", body);
+      show(msg, `created ${r.name}\nid ${r.id}\nvolume ${r.volume}`, true);
+      refresh();
+    } catch (err) { show(msg, err.message, false); }
+  });
+});
+
+$("#filter").addEventListener("submit", (e) => { e.preventDefault(); refresh(); });
+
+async function refresh() {
+  const name = new FormData($("#filter")).get("name");
+  const msg = $("#list-msg");
+  try {
+    const items = await api("GET", "/containers?name=" + encodeURIComponent(name));
+    msg.textContent = items.length ? "" : "no containers";
+    msg.className = "msg";
+    $("#rows").replaceChildren(...items.map(row));
+  } catch (err) { show(msg, err.message, false); }
+}
+
+function cell(text, cls) {
+  const td = document.createElement("td");
+  td.textContent = text;
+  if (cls) td.className = cls;
+  return td;
+}
+
+function row(c) {
+  const tr = document.createElement("tr");
+  const name = (c.Names?.[0] || c.Id).replace(/^\//, "");
+  const ports = (c.Ports || [])
+    .filter((p) => p.PublicPort)
+    .map((p) => `${p.IP}:${p.PublicPort}→${p.PrivatePort}/${p.Type}`)
+    .join("\n");
+  tr.append(
+    cell(name, "mono"),
+    cell(c.Image),
+    cell(`${c.State} · ${c.Status}`, "state-" + c.State),
+    cell(ports, "mono"),
+  );
+  const actions = document.createElement("td");
+  actions.className = "actions";
+  const msg = $("#list-msg");
+  for (const [label, method, suffix, cls] of [
+    ["Start", "POST", "/start"], ["Stop", "POST", "/stop"], ["Remove", "DELETE", "", "danger"],
+  ]) {
+    const b = document.createElement("button");
+    b.textContent = label;
+    if (cls) b.className = cls;
+    b.onclick = () => {
+      if (label === "Remove" && !confirm(`Remove ${name}?`)) return;
+      busy(b, async () => {
+        try { await api(method, `/containers/${c.Id}${suffix}`); show(msg, `${label.toLowerCase()} ${name}: ok`, true); }
+        catch (err) { show(msg, err.message, false); }
+        refresh();
+      });
+    };
+    actions.append(b);
+  }
+  const logs = document.createElement("button");
+  logs.textContent = "Logs";
+  logs.onclick = () => openLogs(c.Id, name);
+  actions.append(logs);
+  tr.append(actions);
+  return tr;
+}
+
+let ws = null;
+
+function logLine(text, cls) {
+  const log = $("#log");
+  const span = document.createElement("span");
+  span.textContent = text;
+  if (cls) span.className = cls;
+  log.append(span);
+  // keep the DOM bounded on chatty containers
+  while (log.childNodes.length > 5000) log.firstChild.remove();
+  if ($("#autoscroll").checked) log.scrollTop = log.scrollHeight;
+}
+
+function openLogs(id, name) {
+  if (ws) ws.close();
+  $("#log").replaceChildren();
+  $("#log-target").textContent = name;
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  const tail = encodeURIComponent($("#tail").value || "100");
+  const sock = new WebSocket(`${proto}//${location.host}/containers/${id}/logs?tail=${tail}`);
+  ws = sock;
+  $("#disconnect").disabled = false;
+  sock.onopen = () => logLine(`— connected to ${name}\n`, "sys");
+  sock.onmessage = (e) => {
+    const f = JSON.parse(e.data);
+    logLine(f.data, f.stream === "stderr" ? "stderr" : "");
+  };
+  sock.onclose = (e) => {
+    logLine(`— closed (${e.code}${e.reason ? ": " + e.reason : ""})\n`, "sys");
+    if (ws === sock) { ws = null; $("#disconnect").disabled = true; }
+  };
+}
+
+$("#disconnect").onclick = () => ws && ws.close();
+$("#clear").onclick = () => $("#log").replaceChildren();
+
+refresh();
+</script>
+</body>
+</html>
