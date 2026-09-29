@@ -3,7 +3,9 @@ package docker
 import (
 	"context"
 	"fmt"
+	"io"
 
+	"github.com/moby/moby/api/pkg/stdcopy"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/mount"
 	"github.com/moby/moby/api/types/network"
@@ -53,7 +55,7 @@ type ContainerService interface {
 	Start(ctx context.Context, name string) error
 	Stop(ctx context.Context, name string) error
 	Remove(ctx context.Context, name string) error
-	// TODO log
+	StreamLogs(ctx context.Context, name string, tail string, stdout, stderr io.Writer) error
 }
 
 // ContainerServiceImpl implements ContainerService using the Docker API client,
@@ -163,5 +165,28 @@ func (c ContainerServiceImpl) Stop(ctx context.Context, name string) error {
 // Remove removes the container identified by name or ID.
 func (c ContainerServiceImpl) Remove(ctx context.Context, name string) error {
 	_, err := c.Client.ContainerRemove(ctx, name, client.ContainerRemoveOptions{})
+	return err
+}
+
+// StreamLogs follows the logs of the container name, starting from the last
+// tail lines, and copies stdout and stderr to the matching writer. It blocks
+// until ctx is cancelled or the container stops.
+func (c ContainerServiceImpl) StreamLogs(ctx context.Context, name string, tail string, stdout, stderr io.Writer) error {
+	logs, err := c.Client.ContainerLogs(ctx, name, client.ContainerLogsOptions{
+		ShowStdout: true,
+		ShowStderr: true,
+		Follow:     true,
+		Tail:       tail,
+	})
+	if err != nil {
+		return err
+	}
+	defer logs.Close()
+
+	// Without a TTY the stream is multiplexed with 8-byte frame headers.
+	_, err = stdcopy.StdCopy(stdout, stderr, logs)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 	return err
 }
