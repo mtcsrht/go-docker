@@ -171,9 +171,21 @@ func main() {
 	}
 	slog.Info("container started", "id", containerID)
 
+	logCtx, stopLogs := context.WithCancel(ctx)
+	logsDone := make(chan struct{})
+	go func() {
+		defer close(logsDone)
+		err := containerService.StreamLogs(logCtx, containerID, "40", os.Stdout, os.Stderr)
+		if err != nil && logCtx.Err() == nil {
+			slog.Error("streaming logs", "id", containerID, "error", err)
+		}
+	}()
+
 	fmt.Println("Press Enter to stop")
 	input := bufio.NewScanner(os.Stdin)
 	input.Scan()
+	stopLogs()
+	<-logsDone
 	err = containerService.Stop(ctx, containerID)
 	if err != nil {
 		fatal("stopping container", "id", containerID, "error", err)
