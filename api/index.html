@@ -4,6 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>go-docker test panel</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
+<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
 <style>
   :root {
     color-scheme: light dark;
@@ -36,6 +39,7 @@
   .grid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
   .row { display: flex; gap: 8px; align-items: end; flex-wrap: wrap; }
   .full { grid-column: 1 / -1; }
+  label.check { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--fg); }
   .msg { font-family: ui-monospace, monospace; font-size: 12px; white-space: pre-wrap;
          word-break: break-all; margin: 10px 0 0; }
   .msg.err { color: var(--danger); } .msg.ok { color: var(--ok); }
@@ -52,6 +56,7 @@
          padding: 10px; border-radius: 6px; font: 12px/1.4 ui-monospace, monospace; white-space: pre-wrap; word-break: break-all; }
   #log .stderr { color: var(--log-err); }
   #log .sys { color: var(--muted); font-style: italic; }
+  #term { background: var(--log-bg); height: 400px; margin: 10px 0 0; padding: 6px; border-radius: 6px; }
 </style>
 </head>
 <body>
@@ -66,6 +71,8 @@
       <label>Swap MB <input name="swapMB" type="number" min="0" value="0"></label>
       <label>Milli CPUs <input name="milliCPUs" type="number" min="0" value="0"></label>
       <label>Disk GB <input name="diskGB" type="number" min="0" value="0"></label>
+      <label class="check"><input name="tty" type="checkbox"> TTY (-t)</label>
+      <label class="check"><input name="stdinOpen" type="checkbox"> Keep stdin open (-i)</label>
       <label class="full">Env (KEY=VALUE, one per line) <textarea name="env" placeholder="EULA=TRUE"></textarea></label>
       <div class="full row"><button class="primary" type="submit">Create</button>
         <span style="color:var(--muted);font-size:12px">0 = no limit. Pulling a new image can take a while.</span></div>
@@ -98,6 +105,15 @@
       <button id="clear" type="button">Clear</button>
     </div>
     <pre id="log"></pre>
+  </section>
+
+  <section>
+    <h2>Terminal <span id="shell-target" class="mono" style="color:var(--muted)"></span></h2>
+    <div class="row">
+      <button id="shell-disconnect" type="button" disabled>Disconnect</button>
+      <span style="color:var(--muted);font-size:12px">Console types into the container's main process: Ctrl-C there stops the server.</span>
+    </div>
+    <div id="term"></div>
   </section>
 </main>
 
@@ -138,6 +154,7 @@ $("#create").addEventListener("submit", (e) => {
     env: f.get("env").split("\n").map((s) => s.trim()).filter(Boolean),
     memoryMB: +f.get("memoryMB"), swapMB: +f.get("swapMB"),
     milliCPUs: +f.get("milliCPUs"), diskGB: +f.get("diskGB"),
+    tty: f.has("tty"), stdinOpen: f.has("stdinOpen"),
   };
   const msg = $("#create-msg");
   show(msg, "creating…", true);
@@ -206,6 +223,14 @@ function row(c) {
   logs.textContent = "Logs";
   logs.onclick = () => openLogs(c.Id, name);
   actions.append(logs);
+  const shellBtn = document.createElement("button");
+  shellBtn.textContent = "Shell";
+  shellBtn.onclick = () => openShell(c.Id, name, "shell");
+  actions.append(shellBtn);
+  const consoleBtn = document.createElement("button");
+  consoleBtn.textContent = "Console";
+  consoleBtn.onclick = () => openShell(c.Id, name, "attach");
+  actions.append(consoleBtn);
   tr.append(actions);
   return tr;
 }
@@ -245,6 +270,43 @@ function openLogs(id, name) {
 
 $("#disconnect").onclick = () => ws && ws.close();
 $("#clear").onclick = () => $("#log").replaceChildren();
+
+const term = new Terminal({ fontSize: 12, fontFamily: "ui-monospace, monospace", convertEol: false });
+const fit = new FitAddon.FitAddon();
+term.loadAddon(fit);
+term.open($("#term"));
+fit.fit();
+let shell = null;
+
+// sendSize tells the server the terminal size, as a text message.
+const sendSize = () => {
+  if (shell?.readyState === WebSocket.OPEN) shell.send(JSON.stringify({ cols: term.cols, rows: term.rows }));
+};
+term.onResize(sendSize);
+new ResizeObserver(() => fit.fit()).observe($("#term"));
+// binary messages are raw keystrokes
+const enc = new TextEncoder();
+term.onData((d) => { if (shell?.readyState === WebSocket.OPEN) shell.send(enc.encode(d)); });
+
+// openShell opens the shell or attach (console) terminal of a container.
+function openShell(id, name, kind) {
+  if (shell) shell.close();
+  term.reset();
+  $("#shell-target").textContent = `${kind} · ${name}`;
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  const sock = new WebSocket(`${proto}//${location.host}/containers/${id}/${kind}`);
+  sock.binaryType = "arraybuffer";
+  shell = sock;
+  $("#shell-disconnect").disabled = false;
+  sock.onopen = () => { sendSize(); term.focus(); };
+  sock.onmessage = (e) => term.write(new Uint8Array(e.data));
+  sock.onclose = (e) => {
+    term.write(`\r\n\x1b[3m— closed (${e.code}${e.reason ? ": " + e.reason : ""})\x1b[0m\r\n`);
+    if (shell === sock) { shell = null; $("#shell-disconnect").disabled = true; }
+  };
+}
+
+$("#shell-disconnect").onclick = () => shell && shell.close();
 
 refresh();
 </script>

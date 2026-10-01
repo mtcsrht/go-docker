@@ -46,6 +46,12 @@ type ContainerSpec struct {
 
 	// DiskGB sets the amount of GB of storage container has
 	DiskGB int64
+
+	// TTY runs the container on a terminal, like docker run -t. Its stdout
+	// and stderr then arrive merged as one stream.
+	TTY bool
+	// StdinOpen keeps stdin open so it can be attached to, like docker run -i.
+	StdinOpen bool
 }
 
 // ContainerService manages the lifecycle of containers.
@@ -56,6 +62,8 @@ type ContainerService interface {
 	Stop(ctx context.Context, name string) error
 	Remove(ctx context.Context, name string) error
 	StreamLogs(ctx context.Context, name string, tail string, stdout, stderr io.Writer) error
+	Shell(ctx context.Context, name string) (*Shell, error)
+	Attach(ctx context.Context, name string) (*Console, error)
 }
 
 // ContainerServiceImpl implements ContainerService using the Docker API client,
@@ -117,7 +125,9 @@ func (c ContainerServiceImpl) Create(ctx context.Context, spec ContainerSpec) (s
 
 	createResult, err := c.Client.ContainerCreate(ctx, client.ContainerCreateOptions{
 		Config: &container.Config{
-			Env: spec.Env,
+			Env:       spec.Env,
+			Tty:       spec.TTY,
+			OpenStdin: spec.StdinOpen,
 		},
 		HostConfig: &container.HostConfig{
 			PortBindings:  spec.PortBindings,
@@ -169,9 +179,14 @@ func (c ContainerServiceImpl) Remove(ctx context.Context, name string) error {
 }
 
 // StreamLogs follows the logs of the container name, starting from the last
-// tail lines, and copies stdout and stderr to the matching writer. It blocks
-// until ctx is cancelled or the container stops.
+// tail lines, and copies stdout and stderr to the matching writer. A TTY
+// container has one merged stream, which goes to stdout. It blocks until ctx is
+// cancelled or the container stops.
 func (c ContainerServiceImpl) StreamLogs(ctx context.Context, name string, tail string, stdout, stderr io.Writer) error {
+	inspect, err := c.Client.ContainerInspect(ctx, name, client.ContainerInspectOptions{})
+	if err != nil {
+		return err
+	}
 	logs, err := c.Client.ContainerLogs(ctx, name, client.ContainerLogsOptions{
 		ShowStdout: true,
 		ShowStderr: true,
@@ -184,7 +199,11 @@ func (c ContainerServiceImpl) StreamLogs(ctx context.Context, name string, tail 
 	defer logs.Close()
 
 	// Without a TTY the stream is multiplexed with 8-byte frame headers.
-	_, err = stdcopy.StdCopy(stdout, stderr, logs)
+	if inspect.Container.Config.Tty {
+		_, err = io.Copy(stdout, logs)
+	} else {
+		_, err = stdcopy.StdCopy(stdout, stderr, logs)
+	}
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}

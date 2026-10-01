@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/netip"
@@ -44,6 +45,8 @@ func NewHandler(cs docker.ContainerService, vs docker.VolumeService, is docker.I
 	mux.HandleFunc("POST /containers/{id}/stop", s.stop)
 	mux.HandleFunc("DELETE /containers/{id}", s.remove)
 	mux.HandleFunc("GET /containers/{id}/logs", s.logs)
+	mux.HandleFunc("GET /containers/{id}/shell", s.shell)
+	mux.HandleFunc("GET /containers/{id}/attach", s.attach)
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Write(indexHTML)
@@ -65,6 +68,8 @@ type createRequest struct {
 	SwapMB    int64    `json:"swapMB"`
 	MilliCPUs int64    `json:"milliCPUs"`
 	DiskGB    int64    `json:"diskGB"`
+	TTY       bool     `json:"tty"`
+	StdinOpen bool     `json:"stdinOpen"`
 }
 
 // validate reports the first invalid field of r.
@@ -146,6 +151,8 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		MemorySettings: docker.MemorySettings{MaxMemory: req.MemoryMB, MaxSwap: req.SwapMB},
 		MilliCPUs:      req.MilliCPUs,
 		DiskGB:         req.DiskGB,
+		TTY:            req.TTY,
+		StdinOpen:      req.StdinOpen,
 	})
 	if err != nil {
 		// the volume was made for this container only, so don't leak it
@@ -247,6 +254,116 @@ func (s *Server) logs(w http.ResponseWriter, r *http.Request) {
 	default:
 		conn.Close(websocket.StatusNormalClosure, "container stopped")
 	}
+}
+
+// resizeMsg is a text message from the terminal client asking for a new terminal
+// size.
+type resizeMsg struct {
+	Cols uint `json:"cols"`
+	Rows uint `json:"rows"`
+}
+
+// terminal is an interactive session in a container: a docker.Shell or a
+// docker.Console.
+type terminal interface {
+	io.ReadWriter
+	Resize(ctx context.Context, cols, rows uint) error
+	Close()
+}
+
+// shell bridges a websocket to a new shell in the container.
+func (s *Server) shell(w http.ResponseWriter, r *http.Request) {
+	s.bridge(w, r, "shell", func(ctx context.Context, id string) (terminal, error) {
+		return s.containers.Shell(ctx, id)
+	})
+}
+
+// attach bridges a websocket to the container's main process, such as a game
+// server console.
+func (s *Server) attach(w http.ResponseWriter, r *http.Request) {
+	s.bridge(w, r, "console", func(ctx context.Context, id string) (terminal, error) {
+		return s.containers.Attach(ctx, id)
+	})
+}
+
+// bridge upgrades to a websocket and bridges it to the terminal open returns
+// for the {id} container. Binary messages carry raw terminal bytes both ways; a
+// text message from the client is a resizeMsg. kind names the terminal in logs
+// and close reasons.
+func (s *Server) bridge(w http.ResponseWriter, r *http.Request, kind string, open func(context.Context, string) (terminal, error)) {
+	id := r.PathValue("id")
+
+	// nil options keep the same-origin check for browser clients
+	conn, err := websocket.Accept(w, r, nil)
+	if err != nil {
+		return // Accept already wrote the error response
+	}
+	defer conn.CloseNow()
+
+	ctx := r.Context()
+	sh, err := open(ctx, id)
+	switch {
+	case cerrdefs.IsNotFound(err):
+		conn.Close(websocket.StatusPolicyViolation, "container not found")
+		return
+	case cerrdefs.IsConflict(err):
+		conn.Close(websocket.StatusPolicyViolation, "container is not running")
+		return
+	case cerrdefs.IsFailedPrecondition(err):
+		conn.Close(websocket.StatusPolicyViolation, "container needs a TTY and open stdin")
+		return
+	case err != nil:
+		slog.Error("opening "+kind, "id", id, "error", err)
+		conn.Close(websocket.StatusInternalError, "opening "+kind+" failed")
+		return
+	}
+	slog.Info(kind+" opened", "id", id)
+	defer slog.Info(kind+" closed", "id", id)
+
+	// terminal output → client, until the terminal ends
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		buf := make([]byte, 32<<10)
+		for {
+			n, err := sh.Read(buf)
+			if n > 0 {
+				// a stalled client must not pin the terminal forever
+				wctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+				werr := conn.Write(wctx, websocket.MessageBinary, buf[:n])
+				cancel()
+				if werr != nil {
+					return
+				}
+			}
+			if err != nil {
+				conn.Close(websocket.StatusNormalClosure, kind+" ended")
+				return
+			}
+		}
+	}()
+
+	// client input → terminal, until the client goes away
+	for {
+		typ, data, err := conn.Read(ctx)
+		if err != nil {
+			break
+		}
+		if typ == websocket.MessageText {
+			var m resizeMsg
+			if json.Unmarshal(data, &m) == nil && m.Cols > 0 && m.Rows > 0 {
+				if err := sh.Resize(ctx, m.Cols, m.Rows); err != nil {
+					slog.Warn("resizing "+kind, "id", id, "error", err)
+				}
+			}
+			continue
+		}
+		if _, err := sh.Write(data); err != nil {
+			break
+		}
+	}
+	sh.Close() // unblocks the output goroutine
+	<-done
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
