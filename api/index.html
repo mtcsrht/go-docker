@@ -27,7 +27,7 @@
   h2 { font-size: 15px; margin: 0 0 12px; }
   section { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
   label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
-  input, textarea { font: inherit; color: var(--fg); background: var(--bg);
+  input, textarea, select { font: inherit; color: var(--fg); background: var(--bg);
                     border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; }
   textarea { font-family: ui-monospace, monospace; min-height: 60px; resize: vertical; }
   button { font: inherit; border: 1px solid var(--border); background: var(--bg); color: var(--fg);
@@ -66,6 +66,7 @@
   <section>
     <h2>Create container</h2>
     <form id="create" class="grid">
+      <label class="full">Template <select id="template"><option value="">— none —</option></select></label>
       <label class="full">Image <input name="image" required placeholder="redis:alpine"></label>
       <label>Memory MB <input name="memoryMB" type="number" min="0" value="0"></label>
       <label>Swap MB <input name="swapMB" type="number" min="0" value="0"></label>
@@ -166,6 +167,21 @@ $("#create").addEventListener("submit", (e) => {
     } catch (err) { show(msg, err.message, false); }
   });
 });
+
+// picking a template fills the create form with its values
+api("GET", "/templates").then((ts) => {
+  const sel = $("#template");
+  for (const name of Object.keys(ts).sort()) sel.append(new Option(name, name));
+  sel.onchange = () => {
+    const t = ts[sel.value];
+    if (!t) return;
+    const f = $("#create").elements;
+    for (const k of ["image", "memoryMB", "swapMB", "milliCPUs", "diskGB"]) f[k].value = t[k];
+    f.tty.checked = t.tty;
+    f.stdinOpen.checked = t.stdinOpen;
+    f.env.value = (t.env || []).join("\n");
+  };
+}).catch((err) => show($("#create-msg"), err.message, false));
 
 $("#filter").addEventListener("submit", (e) => { e.preventDefault(); refresh(); });
 

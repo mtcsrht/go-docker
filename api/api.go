@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/netip"
+	"slices"
 	"strings"
 	"time"
 
@@ -47,6 +48,10 @@ func NewHandler(cs docker.ContainerService, vs docker.VolumeService, is docker.I
 	mux.HandleFunc("GET /containers/{id}/logs", s.logs)
 	mux.HandleFunc("GET /containers/{id}/shell", s.shell)
 	mux.HandleFunc("GET /containers/{id}/attach", s.attach)
+	mux.HandleFunc("GET /templates", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, templates)
+	})
+	mux.HandleFunc("POST /templates/{name}/containers", s.createFromTemplate)
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Write(indexHTML)
@@ -88,23 +93,58 @@ func (r createRequest) validate() error {
 	return nil
 }
 
+// mergeEnv returns base with each KEY=VALUE of over replacing the entry for KEY,
+// or appended when base has none.
+func mergeEnv(base, over []string) []string {
+	env := slices.Clone(base)
+	for _, kv := range over {
+		key, _, _ := strings.Cut(kv, "=")
+		i := slices.IndexFunc(env, func(e string) bool { return strings.HasPrefix(e, key+"=") })
+		if i < 0 {
+			env = append(env, kv)
+		} else {
+			env[i] = kv
+		}
+	}
+	return env
+}
+
 type createResponse struct {
 	ID     string `json:"id"`
 	Name   string `json:"name"`
 	Volume string `json:"volume"`
 }
 
-// create ensures the image, creates a fresh volume and creates a container on
-// it, mounting the volume at every path the image declares and publishing every
-// exposed port on 127.0.0.1.
 func (s *Server) create(w http.ResponseWriter, r *http.Request) {
-	var req createRequest
+	s.createFrom(w, r, createRequest{})
+}
+
+// createFromTemplate creates a container from the {name} template. The body is
+// optional and overrides the template's fields.
+func (s *Server) createFromTemplate(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	t, ok := templates[name]
+	if !ok {
+		writeError(w, http.StatusNotFound, "entity_not_found", fmt.Sprintf("template %q not found", name))
+		return
+	}
+	s.createFrom(w, r, t)
+}
+
+// createFrom decodes the request body over req, so the fields it sets override
+// req's and its env entries replace req's by key. It then ensures the image,
+// creates a fresh volume and creates a container on it, mounting the volume at
+// every path the image declares and publishing every exposed port on 127.0.0.1.
+func (s *Server) createFrom(w http.ResponseWriter, r *http.Request, req createRequest) {
+	baseEnv := req.Env
+	req.Env = nil // decoding would otherwise write into the template's slice
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
+	if err := dec.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
 		writeError(w, http.StatusBadRequest, "invalid_input", "Request body must be valid JSON: "+err.Error())
 		return
 	}
+	req.Env = mergeEnv(baseEnv, req.Env)
 	if err := req.validate(); err != nil {
 		writeError(w, http.StatusBadRequest, "validation_failed", err.Error())
 		return
